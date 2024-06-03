@@ -1,3 +1,4 @@
+import argparse
 import json
 import nltk
 import os
@@ -7,7 +8,7 @@ from collections import Counter
 from datasets import load_dataset
 from nltk import sent_tokenize
 
-# nltk.download('punkt')
+nltk.download('punkt')
 
 lang_ids = ['olo', 'vep']
 
@@ -82,6 +83,16 @@ class WikiEntry:
         return str(self.__dict__)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('out')
+    parser.add_argument('-norm', action='store_true')
+    parser.add_argument('-filter', action='store_true')
+
+    return parser.parse_args()
+
+
 def remove_appendices(text, lang):
     sections = {
         'olo': ['Lähtehet', 'Kirjalližuttu', 'Aihies muijal'],  # References, Bibliography, External links
@@ -141,7 +152,7 @@ def isolate_sentences(segment):
     return filtered
 
 
-def parse_entries(dataset, lang):
+def parse_entries(dataset, lang, norm=True):
     entries = []
 
     for example in dataset:
@@ -152,7 +163,7 @@ def parse_entries(dataset, lang):
         entry.title = example['title']
 
         stripped = remove_appendices(example['text'], lang)
-        normalized = normalize(stripped)
+        normalized = normalize(stripped) if norm else stripped
         segmented = sent_tokenize(normalized, 'estonian')
         segmented = fix_segments(segmented, lang)
 
@@ -183,7 +194,7 @@ def is_valid(sentence, lang, ratio, min_length):
     num_latin = len(re.findall('[' + alphabet[lang] +']+', sentence))
     num_cyrillic = len(re.findall(r'[а-яА-Я]', sentence))
 
-    if num_latin == 0 or num_cyrillic // num_latin > ratio:
+    if num_latin == 0 or num_cyrillic / num_latin > ratio:
         return False
 
     num_words = len(re.findall('[' + alphabet[lang] +']+', sentence))
@@ -197,7 +208,7 @@ def filter_sentences(sentences, lang):
     filtered = []
 
     for sentence in sentences:
-        if is_valid(sentence, lang, 2, 3):
+        if is_valid(sentence, lang, 1.0, 3):
             filtered.append(sentence)
 
     return filtered
@@ -217,81 +228,33 @@ def filter_entries(entries, lang):
     return filtered
 
 
-def deduplicate(entries, limit):
-    all_sentences = [sentence for entry in entries for sentence in entry.text]
-    counter = Counter(all_sentences)
-    most_common = {sentence: count for sentence, count in counter.most_common() if count > limit}
-
-    for entry in entries:
-        deduplicated = []
-
-        for sentence in entry.text:
-            if sentence not in most_common.keys():
-                deduplicated.append(sentence)
-
-        entry.text = deduplicated
-
-    return entries, most_common
-
-
 def save_as_json(data, path):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, default=lambda o: o.__dict__, ensure_ascii=False, indent=4)
 
 
-def split_into_paragraphs(entries, paragraph_size):
-    paragraphs = []
-
-    for entry in entries:
-        text = entry.text
-        current_paragraph = []
-        count = 0
-
-        for sentence in text:
-            if count == paragraph_size:
-                paragraphs.append(current_paragraph)
-                current_paragraph = []
-                count = 0
-
-            current_paragraph.append(sentence)
-            count += 1
-
-        if count > 0:
-            paragraphs.append(current_paragraph)
-
-    return paragraphs
-
-
-def save_as_txt(paragraphs, lang, dest):
-    with open(dest + f'/mono.{lang}', 'w', encoding='utf-8') as file:
-        for paragraph in paragraphs:
-            file.write('\n'.join(paragraph) + '\n\n')
-
-
 def main():
-    if not os.path.exists('out/wikipedia'):
-        os.makedirs('out/wikipedia')
+    args = parse_args()
+    out_path = args.out
+    to_norm = args.norm
+    to_filter = args.filter
+
+    if not os.path.exists(out_path):
+        os.makedirs(out_path)
 
     for lang in lang_ids:
         print(f'\nProcessing language: {lang}...')
         dataset = load_dataset('wikipedia', language=lang, date='20240301', trust_remote_code=True)
         print(dataset)
 
-        data = parse_entries(dataset['train'], lang)
+        data = parse_entries(dataset['train'], lang, to_norm)
         print(f'Number of sentences: {sum(len(example.text) for example in data)}')
 
-        data = filter_entries(data, lang)
-        print(f'Number of filtered sentences: {sum(len(example.text) for example in data)}')
+        if to_filter:
+            data = filter_entries(data, lang)
+            print(f'Number of filtered sentences: {sum(len(example.text) for example in data)}')
 
-        # data, removed = deduplicate(data, 100)
-        # print(f'Number of deduplicated sentences: {sum(len(example.text) for example in data)}')
-        # print('Removed duplicates:', removed)
-
-        paragraphs = split_into_paragraphs(data, 5)
-        print(f'Number of paragraphs: {len(paragraphs)}')
-
-        save_as_json(data, f'data/wikipedia/{lang}.json')
-        save_as_txt(paragraphs, lang, f'out/wikipedia')
+        save_as_json(data, out_path + f'/{lang}.json')
         print('Saved and finished!')
 
 
